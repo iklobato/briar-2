@@ -7,16 +7,18 @@ so gitlab.com and a self-hosted GitLab both work.
 
 from __future__ import annotations
 
+import structlog
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from urllib.parse import quote as url_quote
 
-import httpx
+import gitlab
+from gitlab.exceptions import GitlabAuthenticationError
 
 from briar2.models import Event, Priority, SourceType
 from briar2.sources.base import PollerConfig, Source
 
-_API_PATH = "/api/v4"
+
+_logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -28,20 +30,27 @@ class GitLabConfig(PollerConfig):
     url: str
 
     def merge_requests_url(self) -> str:
-        """The API URL that lists the merge requests of the project."""
-        base = self.url.rstrip("/")
-        project = url_quote(self.project, safe="")
-        return f"{base}{_API_PATH}/projects/{project}/merge_requests"
+        """Full API URL for merge requests of this project."""
+        encoded = self.project.replace("/", "%2F")
+        return f"{self.url}/api/v4/projects/{encoded}/merge_requests"
 
 
 class GitLabSource(Source):
     source_type = SourceType.GITLAB_MR
     _config: GitLabConfig
-
+    _client: gitlab.Gitlab | None
     _REQUEST_TIMEOUT = 10.0
 
     def __init__(self, config: GitLabConfig) -> None:
         self._config = config
+        token = self._get_token()
+        self._client = (
+            gitlab.Gitlab(
+                self._config.url, private_token=token, timeout=self._REQUEST_TIMEOUT
+            )
+            if token
+            else None
+        )
 
     @property
     def poll_every(self) -> str:
@@ -50,44 +59,35 @@ class GitLabSource(Source):
 
     def poll(self, since: datetime) -> list[Event]:
         """Fetch new MR activity since `since`."""
-        token = self._get_token()
-        if not token:
+        if self._client is None:
             return []
-        mrs = self._fetch_mrs(token, since)
+        try:
+            mrs = self._fetch_mrs(since)
+        except GitlabAuthenticationError:
+            _logger.error("gitlab_auth_failed")
+            return []
         return [self._event_from_mr(mr) for mr in mrs]
 
-    def _fetch_mrs(self, token: str, since: datetime) -> list[dict]:
-        headers = {"Private-Token": token}
-        params = {"updated_after": since.isoformat(), "per_page": "50"}
-        try:
-            with httpx.Client() as client:
-                resp = client.get(
-                    self._config.merge_requests_url(),
-                    headers=headers,
-                    params=params,
-                    timeout=self._REQUEST_TIMEOUT,
-                )
-                return resp.json()
-        except httpx.HTTPError:
-            return []
+    def _fetch_mrs(self, since: datetime) -> list:
+        project = self._client.projects.get(self._config.project)
+        return project.mergerequests.list(
+            updated_after=since.isoformat(), per_page=50
+        )
 
-    def _event_from_mr(self, mr: dict) -> Event:
-        mr_id = mr["iid"]
-        occurred = datetime.fromisoformat(mr["updated_at"].replace("Z", "+00:00"))
-        source_id = f"{self._config.project}!{mr_id}"
+    def _event_from_mr(self, mr) -> Event:
         return Event(
             source_type=SourceType.GITLAB_MR,
-            source_id=source_id,
+            source_id=f"{self._config.project}!{mr.iid}",
             priority=Priority.ALERT_TRIAGE,
-            occurred_at=occurred,
+            occurred_at=datetime.fromisoformat(mr.updated_at.replace("Z", "+00:00")),
             enqueued_at=datetime.now(timezone.utc),
             payload={
-                "title": mr.get("title", ""),
-                "state": mr.get("state", ""),
-                "author": mr.get("author", {}).get("username", ""),
-                "url": mr.get("web_url", ""),
+                "title": mr.title or "",
+                "state": mr.state or "",
+                "author": mr.author["username"] if mr.author else "",
+                "url": mr.web_url or "",
             },
-            resource_key=f"mr/gitlab/{self._config.project}/{mr_id}",
+            resource_key=f"mr/gitlab/{self._config.project}/{mr.iid}",
         )
 
     def _get_token(self) -> str:

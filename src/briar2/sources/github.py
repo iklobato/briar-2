@@ -7,13 +7,18 @@ so github.com and GitHub Enterprise both work.
 
 from __future__ import annotations
 
+import structlog
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-import httpx
+from github import Github
+from github.GithubException import GithubException
 
 from briar2.models import Event, Priority, SourceType
 from briar2.sources.base import PollerConfig, Source
+
+
+_logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -25,18 +30,25 @@ class GitHubConfig(PollerConfig):
     url: str
 
     def pulls_url(self, repo: str) -> str:
-        """The API URL that lists the pull requests of one repository."""
-        return f"{self.url.rstrip('/')}/repos/{repo}/pulls"
+        """Full API URL for pull requests of one repo."""
+        return f"{self.url}/repos/{repo}/pulls"
 
 
 class GitHubSource(Source):
     source_type = SourceType.GITHUB_PR
     _config: GitHubConfig
-
-    _REQUEST_TIMEOUT = 10.0
+    _client: Github | None
+    _REQUEST_TIMEOUT = 10
 
     def __init__(self, config: GitHubConfig) -> None:
         self._config = config
+        token = self._get_token()
+        if token:
+            self._client = Github(
+                token, base_url=self._config.url, timeout=self._REQUEST_TIMEOUT
+            )
+        else:
+            self._client = None
 
     @property
     def poll_every(self) -> str:
@@ -45,51 +57,38 @@ class GitHubSource(Source):
 
     def poll(self, since: datetime) -> list[Event]:
         """Fetch new PR activity since `since`."""
-        token = self._get_token()
-        if not token:
+        if self._client is None:
             return []
-        since_iso = since.isoformat()
-        headers = {
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github+json",
-        }
         events: list[Event] = []
         for repo in self._config.repos:
-            events.extend(self._fetch_repo_prs(headers, repo, since_iso))
+            events.extend(self._fetch_repo_prs(repo, since))
         return events
 
-    def _fetch_repo_prs(self, headers: dict, repo: str, since_iso: str) -> list[Event]:
-        params = {"state": "all", "since": since_iso, "per_page": "50"}
+    def _fetch_repo_prs(self, repo: str, since: datetime) -> list[Event]:
         try:
-            with httpx.Client() as client:
-                resp = client.get(
-                    self._config.pulls_url(repo),
-                    headers=headers,
-                    params=params,
-                    timeout=self._REQUEST_TIMEOUT,
-                )
-                prs = resp.json()
-        except httpx.HTTPError:
+            gh_repo = self._client.get_repo(repo)
+            pulls = gh_repo.get_pulls(state="all", sort="updated", direction="desc")
+        except GithubException:
+            _logger.error("github_auth_failed")
             return []
-        return [self._event_from_pr(pr, repo) for pr in prs]
+        return [
+            self._event_from_pr(pr, repo) for pr in pulls if pr.updated_at > since
+        ]
 
-    def _event_from_pr(self, pr: dict, repo: str) -> Event:
-        pr_num = pr["number"]
-        occurred = datetime.fromisoformat(pr["updated_at"].replace("Z", "+00:00"))
-        source_id = f"{repo}#{pr_num}"
+    def _event_from_pr(self, pr, repo: str) -> Event:
         return Event(
             source_type=SourceType.GITHUB_PR,
-            source_id=source_id,
+            source_id=f"{repo}#{pr.number}",
             priority=Priority.ALERT_TRIAGE,
-            occurred_at=occurred,
+            occurred_at=pr.updated_at.replace(tzinfo=timezone.utc),
             enqueued_at=datetime.now(timezone.utc),
             payload={
-                "title": pr.get("title", ""),
-                "state": pr.get("state", ""),
-                "user": pr.get("user", {}).get("login", ""),
-                "url": pr.get("html_url", ""),
+                "title": pr.title or "",
+                "state": pr.state or "",
+                "user": pr.user.login if pr.user else "",
+                "url": pr.html_url or "",
             },
-            resource_key=f"pr/github/{repo}/{pr_num}",
+            resource_key=f"pr/github/{repo}/{pr.number}",
         )
 
     def _get_token(self) -> str:

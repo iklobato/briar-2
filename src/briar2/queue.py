@@ -14,7 +14,6 @@ from pathlib import Path
 from briar2.lock import ResourceLock
 from briar2.models import Event, Priority, SourceType
 
-_FILE_MODE = 0o644
 _DEAD_DIR = "dead"
 _QUEUE_LOCK_KEY = ".queue"
 
@@ -29,6 +28,7 @@ class EventQueue:
     def __init__(self, directory: Path, lock: ResourceLock) -> None:
         self._dir = directory
         self._lock = lock
+        self._dir.mkdir(parents=True, exist_ok=True)
 
     def enqueue(self, event: Event) -> None:
         """Write event to queue as a JSON file."""
@@ -55,6 +55,18 @@ class EventQueue:
             return event
         finally:
             self._lock.release(_QUEUE_LOCK_KEY)
+
+    def enqueue_retry(self, event: Event, next_attempt_at: datetime) -> None:
+        """Re-enqueue with incremented retry_count and backoff timestamp."""
+        payload = self._serialize(event)
+        payload["retry_count"] = event.retry_count + 1
+        payload["next_attempt_at"] = next_attempt_at.isoformat()
+        path = self._dir / f"retry_{event.event_id}.json"
+        path.write_text(json.dumps(payload, default=str) + "\n")
+
+    def requeue(self, event: Event) -> None:
+        """Put a deferred-retry event back into the active queue."""
+        self.enqueue(event)
 
     def dead_letter(self, event: Event, reason: str) -> Path:
         """Park a failed event for human review (D53)."""
@@ -86,10 +98,18 @@ class EventQueue:
             "enqueued_at": event.enqueued_at.isoformat(),
             "resource_key": event.resource_key,
             "payload": event.payload,
+            "retry_count": event.retry_count,
+            "next_attempt_at": (
+                event.next_attempt_at.isoformat()
+                if event.next_attempt_at is not None
+                else None
+            ),
         }
 
     def _read(self, path: Path) -> Event:
         raw = json.loads(path.read_text())
+        next_at_str = raw.get("next_attempt_at")
+        next_at = datetime.fromisoformat(next_at_str) if next_at_str else None
         return Event(
             event_id=raw["event_id"],
             source_type=SourceType(raw["source_type"]),
@@ -99,4 +119,6 @@ class EventQueue:
             enqueued_at=datetime.fromisoformat(raw["enqueued_at"]),
             resource_key=raw.get("resource_key", ""),
             payload=raw.get("payload", {}),
+            retry_count=raw.get("retry_count", 0),
+            next_attempt_at=next_at,
         )

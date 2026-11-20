@@ -20,16 +20,19 @@ from briar2.errors import ActionError
 from briar2.knowledge import KnowledgeStore
 from briar2.llm import AnthropicLLM
 from briar2.lock import ResourceLock
-from briar2.logging import DaemonLogger
+from briar2.logging import BriarLogger
 from briar2.models import ActionResult, Event
+from pydantic import BaseModel
 from briar2.queue import EventQueue
 from briar2.sources.base import Source
-from briar2.sources.factory import SourceFactory
+from briar2.sources.registry import SourceRegistry
 from briar2.stale import StaleDetector, StaleEscalator
 
 _TICK_SECONDS = 5
 _DEDUP_WINDOW = 300  # seconds (D28)
 _INITIAL_LOOKBACK = timedelta(minutes=30)
+_MAX_RETRIES = 3
+_RETRY_BACKOFF_SECONDS = 300  # 5 min
 
 
 @dataclass(frozen=True)
@@ -66,11 +69,7 @@ class Orchestrator:
         asyncio.run(self._serve(config))
 
     def run_all(self) -> None:
-        """Run every configured company in this process.
-
-        Production runs one process per company (D5). This is the local
-        convenience mode.
-        """
+        """Run every configured company in this process."""
         configs = self._load_configs()
         if not configs:
             return
@@ -82,7 +81,7 @@ class Orchestrator:
     def _logger(self) -> logging.Logger:
         """Return the logger, building the daemon logger on first use."""
         if self._log is None:
-            self._log = DaemonLogger("orchestrator").build()
+            self._log = BriarLogger.build("orchestrator")
         return self._log
 
     def _load_configs(self) -> list[CompanyConfig]:
@@ -114,26 +113,21 @@ class Orchestrator:
             queue=EventQueue(queue_dir, ResourceLock(queue_dir)),
             dedup=SlidingWindowDedup(window_seconds=_DEDUP_WINDOW),
             lock=ResourceLock.from_root(config.paths.lock_root),
-            sources=SourceFactory().build(config.sources),
-            runner=self._runner(config, store),
+            sources=self._build_sources(config.sources),
+            runner=AgentRunner(
+                AnthropicLLM(config.company, config.llm),
+                ActionRegistry(config.actions),
+                store,
+            ),
             cap=config.cap,
             store=store,
-            stale=self._stale(config, store),
+            stale=StaleDetector(store, config.company, timedelta(minutes=config.stale_after_minutes)),
             escalator=StaleEscalator(store, config.company),
         )
 
-    def _runner(self, config: CompanyConfig, store: KnowledgeStore) -> AgentRunner:
-        """The agent runner that turns one event into one action."""
-        return AgentRunner(
-            AnthropicLLM(config.company, config.llm),
-            ActionRegistry(config.actions),
-            store,
-        )
-
-    def _stale(self, config: CompanyConfig, store: KnowledgeStore) -> StaleDetector:
-        """The detector that finds failures nobody picked up."""
-        threshold = timedelta(minutes=config.stale_after_minutes)
-        return StaleDetector(store, config.company, threshold)
+    def _build_sources(self, raw: dict[str, BaseModel]) -> list[Source]:
+        """Build sources via the registry."""
+        return [SourceRegistry.build(name, cfg) for name, cfg in raw.items()]
 
     async def _loop(self, state: CompanyState) -> None:
         while True:
@@ -186,20 +180,26 @@ class Orchestrator:
             event = state.queue.dequeue()
             if event is None:
                 return
+            if event.next_attempt_at is not None:
+                now = datetime.now(timezone.utc)
+                if now < event.next_attempt_at:
+                    # Not ready for retry yet, put back
+                    state.queue.requeue(event)
+                    continue
             task = asyncio.create_task(self._run_event(event, state))
             state.running.add(task)
             task.add_done_callback(state.running.discard)
 
     async def _run_event(self, event: Event, state: CompanyState) -> None:
         """Run one event through the agent, off the event loop."""
-        self._logger().info("event_id=%s start", event.event_id)
+        self._logger().info("event_id=%s start retry=%d", event.event_id, event.retry_count)
         try:
             outcome = await asyncio.to_thread(
                 state.runner.spawn, event, state.lock, state.company
             )
         except ActionError as exc:
             self._logger().error("event_id=%s failed error=%s", event.event_id, exc)
-            self._dead_letter(event, str(exc), state)
+            self._retry_or_dlq(event, str(exc), state)
             return
         self._route_outcome(event, outcome, state)
 
@@ -215,15 +215,27 @@ class Orchestrator:
             outcome.skipped,
         )
         if outcome.skipped:
-            state.queue.enqueue(event)
+            self._retry_or_dlq(event, outcome.skip_reason or "skipped", state)
             return
         if not outcome.success:
-            self._dead_letter(event, outcome.detail, state)
+            self._retry_or_dlq(event, outcome.detail, state)
 
-    def _dead_letter(self, event: Event, reason: str, state: CompanyState) -> None:
-        path = state.queue.dead_letter(event, reason)
-        self._logger().error(
-            "event_id=%s dead_letter path=%s reason=%s", event.event_id, path, reason
+    def _retry_or_dlq(self, event: Event, reason: str, state: CompanyState) -> None:
+        """Auto-retry with backoff (up to _MAX_RETRIES), then dead-letter."""
+        if event.retry_count >= _MAX_RETRIES:
+            path = state.queue.dead_letter(event, reason)
+            self._logger().error(
+                "event_id=%s dead_letter path=%s reason=%s retries=%d",
+                event.event_id, path, reason, event.retry_count,
+            )
+            return
+        next_ts = datetime.now(timezone.utc) + timedelta(
+            seconds=_RETRY_BACKOFF_SECONDS * (event.retry_count + 1)
+        )
+        state.queue.enqueue_retry(event, next_ts)
+        self._logger().warning(
+            "event_id=%s retry=%d/%d next=%s reason=%s",
+            event.event_id, event.retry_count + 1, _MAX_RETRIES, next_ts.isoformat(), reason,
         )
 
     def _escalate_stale(self, state: CompanyState) -> None:

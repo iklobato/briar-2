@@ -95,9 +95,17 @@ class AnthropicLLM:
         return self._api_client
 
     def _build_client(self) -> Anthropic:
-        key = os.environ.get(self._settings.api_key_env, "")
+        """Build an Anthropic client.
+
+        Priority: ANTHROPIC_BASE_URL (Claude Code proxy) > ANTHROPIC_API_KEY.
+        When running inside Claude Code the proxy handles auth, so no key is needed.
+        """
+        base_url = os.environ.get("ANTHROPIC_BASE_URL")
+        if base_url:
+            return Anthropic(base_url=base_url)
+        key = os.environ.get("ANTHROPIC_API_KEY", "")
         if not key:
-            raise AuthError(f"{self._settings.api_key_env} is not set")
+            raise AuthError("ANTHROPIC_API_KEY is not set")
         return Anthropic(api_key=key)
 
     def _schema(self, action_names: list[str]) -> type[BaseModel]:

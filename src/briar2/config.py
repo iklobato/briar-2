@@ -82,6 +82,7 @@ class ActionFlags(BaseModel):
 
     slack_draft: bool = Field(default=True, description="Post drafts to Slack threads")
     gitlab_approve: bool = Field(default=False)
+    github_pr_review: bool = Field(default=False, description="Enable GitHub PR review actions")
     ci_fix_attempts: int = Field(default=3, ge=0, le=10)
 
 
@@ -93,9 +94,6 @@ class LLMConfig(BaseModel):
     model: str = Field(default="claude-opus-5-5", description="Anthropic model id")
     effort: str = Field(
         default="medium", description="Reasoning effort: low, medium, high"
-    )
-    api_key_env: str = Field(
-        default="ANTHROPIC_API_KEY", description="Env var holding the API key"
     )
 
 

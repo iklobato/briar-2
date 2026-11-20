@@ -80,16 +80,24 @@ class KnowledgeStore:
         )
 
     def scan(self, company: str) -> dict[str, dict]:
-        """Return metadata for every recorded result, keyed by event id."""
-        results_dir = self._root / company / _RESULTS_TOPIC
-        if not results_dir.exists():
-            return {}
+        """Return metadata for every recorded result and draft, keyed by event id."""
         out: dict[str, dict] = {}
-        for path in sorted(results_dir.glob("*.md")):
-            try:
-                out[path.stem] = self._parse_meta(path.read_text())
-            except OSError:
-                continue
+        results_dir = self._root / company / _RESULTS_TOPIC
+        if results_dir.exists():
+            for path in sorted(results_dir.glob("*.md")):
+                try:
+                    out[path.stem] = self._parse_meta(path.read_text())
+                except OSError:
+                    continue
+        drafts_dir = self._root / company / _DRAFTS_TOPIC
+        if drafts_dir.exists():
+            for path in sorted(drafts_dir.glob("*.md")):
+                try:
+                    meta = self._parse_meta(path.read_text())
+                    meta.setdefault("action", "draft")
+                    out[path.stem] = meta
+                except OSError:
+                    continue
         return out
 
     def context(self, company: str, event: Event) -> str:

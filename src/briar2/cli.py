@@ -76,10 +76,10 @@ class _Cli:
         )
 
     def _cmd_serve(self, args: CliArgs) -> int:
-        from briar2.logging import DaemonLogger
+        from briar2.logging import BriarLogger
         from briar2.orchestrator import Orchestrator
 
-        log = DaemonLogger("serve").build()
+        log = BriarLogger.build("serve")
         orch = Orchestrator(args.config_dir, log=log)
 
         if args.all_companies and args.company:

@@ -56,16 +56,7 @@ class Interval:
 
 @dataclass(frozen=True)
 class Event:
-    """One polled event from a source.
-
-    Attributes:
-        source_type: Which source produced this event.
-        source_id: Stable ID from the source (e.g. MR number, thread TS).
-        priority: Action priority (D34).
-        occurred_at: When the event happened (source timestamp, not poll time).
-        data: Source-specific payload (message body, URL, author, etc.).
-        resource_key: Key for locking (e.g. "mr/gitlab/123").
-    """
+    """One polled event from a source."""
 
     source_type: SourceType
     source_id: str
@@ -77,6 +68,10 @@ class Event:
     # Assigned at enqueue time, not by the source
     event_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     enqueued_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    # Retry tracking (auto-retry with backoff, up to 3x before DLQ)
+    retry_count: int = 0
+    next_attempt_at: datetime | None = field(default=None)
 
 
 @dataclass(frozen=True)

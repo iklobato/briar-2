@@ -12,6 +12,11 @@ from briar2.actions.gitlab import (
     GitLabCommentAction,
     GitLabLabelAction,
 )
+from briar2.actions.github import (
+    GitHubApproveAction,
+    GitHubCommentAction,
+    GitHubLabelAction,
+)
 from briar2.actions.slack import SlackDraftAction, SlackReactAction
 from briar2.config import ActionFlags
 
@@ -30,6 +35,8 @@ class ActionRegistry:
         if self._flags.gitlab_approve:
             names.append("gitlab_approve")
         names.extend(["gitlab_comment", "gitlab_label"])
+        if self._flags.github_pr_review:
+            names.extend(["github_approve", "github_comment", "github_label"])
         return names
 
     def build(self, name: str) -> Action:
@@ -44,4 +51,10 @@ class ActionRegistry:
             return GitLabCommentAction()
         if name == "gitlab_label":
             return GitLabLabelAction()
+        if name == "github_approve":
+            return GitHubApproveAction()
+        if name == "github_comment":
+            return GitHubCommentAction()
+        if name == "github_label":
+            return GitHubLabelAction()
         return RecordAction()

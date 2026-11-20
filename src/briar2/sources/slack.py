@@ -1,18 +1,23 @@
 """Slack thread poller for briar-2.
 
-Reads threads from configured channels, detects new messages,
-mentions, and reactions. Emits Events with source_type="slack_thread".
+Reads threads from configured channels, detects new messages
+and thread replies. Emits Events with source_type="slack_thread".
 """
 
 from __future__ import annotations
 
+import structlog
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-import httpx
+from slack_sdk.web import WebClient
+from slack_sdk.errors import SlackApiError
 
 from briar2.models import Event, Priority, SourceType
 from briar2.sources.base import PollerConfig, Source
+
+
+_logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -26,11 +31,13 @@ class SlackConfig(PollerConfig):
 class SlackSource(Source):
     source_type = SourceType.SLACK_THREAD
     _config: SlackConfig
-
+    _client: WebClient | None
     _REQUEST_TIMEOUT = 10.0
 
     def __init__(self, config: SlackConfig) -> None:
         self._config = config
+        token = self._get_token()
+        self._client = WebClient(token=token) if token else None
 
     @property
     def poll_every(self) -> str:
@@ -38,51 +45,61 @@ class SlackSource(Source):
         return self._config.poll_every
 
     def poll(self, since: datetime) -> list[Event]:
-        """Fetch new messages from configured channels since `since`."""
-        token = self._get_token()
-        if not token:
+        """Fetch new messages and thread replies from configured channels."""
+        if self._client is None:
             return []
         since_ts = since.replace(tzinfo=timezone.utc).timestamp()
         events: list[Event] = []
         for channel in self._config.channels:
-            events.extend(self._fetch_channel(token, channel, since_ts))
+            events.extend(self._fetch_channel(channel, since_ts))
         return events
 
-    def _get_token(self) -> str:
-        import os
-
-        return os.environ.get(self._config.bot_token_env, "")
-
-    def _fetch_channel(self, token: str, channel: str, since_ts: float) -> list[Event]:
-        url = "https://slack.com/api/conversations.history"
-        headers = {"Authorization": f"Bearer {token}"}
-        params = {"channel": channel, "oldest": str(since_ts), "limit": "100"}
+    def _fetch_channel(self, channel: str, since_ts: float) -> list[Event]:
         try:
-            with httpx.Client() as client:
-                resp = client.get(
-                    url, headers=headers, params=params, timeout=self._REQUEST_TIMEOUT
-                )
-                payload = resp.json()
-        except httpx.HTTPError:
-            return []
-
-        if not payload.get("ok"):
-            return []
+            resp = self._client.conversations_history(
+                channel=channel,
+                oldest=str(since_ts),
+                limit=100,
+                timeout=self._REQUEST_TIMEOUT,
+            )
+            messages = resp.get("messages", [])
+        except SlackApiError as exc:
+            error = exc.response.get("error")
+            if error in ("invalid_auth", "account_inactive"):
+                _logger.error("slack_auth_failed", error=error)
+                return []
+            raise
 
         events: list[Event] = []
-        for msg in payload.get("messages", []):
+        for msg in messages:
             events.append(self._event_from_message(msg, channel))
+            if msg.get("reply_count"):
+                events.extend(self._fetch_thread_replies(channel, msg["ts"]))
         return events
+
+    def _fetch_thread_replies(self, channel: str, ts: str) -> list[Event]:
+        try:
+            resp = self._client.conversations_replies(
+                channel=channel, ts=ts, timeout=self._REQUEST_TIMEOUT
+            )
+            messages = resp.get("messages", [])
+        except SlackApiError:
+            return []
+        return [self._event_from_message(m, channel) for m in messages[1:]]
 
     def _event_from_message(self, msg: dict, channel: str) -> Event:
         ts = float(msg.get("ts", 0))
-        source_id = f"{channel}:{msg.get('ts', '')}"
         return Event(
             source_type=SourceType.SLACK_THREAD,
-            source_id=source_id,
+            source_id=f"{channel}:{msg.get('ts', '')}",
             priority=Priority.ALERT_TRIAGE,
             occurred_at=datetime.fromtimestamp(ts, tz=timezone.utc),
             enqueued_at=datetime.now(timezone.utc),
             payload={"text": msg.get("text", ""), "user": msg.get("user", "")},
             resource_key=f"thread/slack/{channel}/{msg.get('ts', '')}",
         )
+
+    def _get_token(self) -> str:
+        import os
+
+        return os.environ.get(self._config.bot_token_env, "")

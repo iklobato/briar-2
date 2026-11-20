@@ -82,8 +82,9 @@ async def test_the_agent_writes_the_draft_and_the_result(harness: Harness) -> No
     await asyncio.gather(*harness.state.running)
 
     recorded = harness.store.scan(_COMPANY)
-    assert recorded[harness.event.event_id]["action"] == "slack_draft"
-    assert recorded[harness.event.event_id]["success"] == "true"
+    assert recorded[harness.event.event_id]["action"] == "draft"
+    result = harness.store.read(_COMPANY, f"results/{harness.event.event_id}")
+    assert result is not None and "success: true" in result
     draft = harness.store.read(_COMPANY, f"drafts/{harness.event.event_id}")
     assert "Draft reply for the thread" in (draft or "")
 
@@ -99,7 +100,9 @@ async def test_the_same_event_is_only_handled_once(harness: Harness) -> None:
     assert len(harness.llm.contexts) == 1
 
 
-async def test_a_failure_that_waited_too_long_is_escalated(harness: Harness) -> None:
+async def test_a_failure_that_waited_too_long_is_escalated(
+    harness: Harness,
+) -> None:
     """A failed result older than the threshold leaves a note for the human."""
     harness.store.write(
         _COMPANY,
@@ -113,10 +116,8 @@ async def test_a_failure_that_waited_too_long_is_escalated(harness: Harness) -> 
         "detail: the remote refused\n",
     )
     orchestrator = Orchestrator("companies", log=logging.getLogger("briar2.test"))
-
     await orchestrator.tick(harness.state)
     await asyncio.gather(*harness.state.running)
-
     note = harness.store.read(_COMPANY, "escalations/old-event")
     assert note is not None
     assert "still waiting for a human" in note
