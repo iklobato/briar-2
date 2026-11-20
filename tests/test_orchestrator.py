@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -19,9 +20,12 @@ from briar2.lock import ResourceLock
 from briar2.models import Decision, Event
 from briar2.orchestrator import CompanyState, Orchestrator
 from briar2.queue import EventQueue
+from briar2.stale import StaleDetector, StaleEscalator
 
 _COMPANY = "acme"
 _CAP = 2
+_STALE_AFTER = timedelta(minutes=60)
+_OLD_STAMP = "2026-11-20T08:00:00+00:00"
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,9 @@ def harness(tmp_path: Path, event: Event, decision: Decision) -> Harness:
         sources=[FakeSource([event])],
         runner=AgentRunner(fake, ActionRegistry(ActionFlags()), store),
         cap=_CAP,
+        store=store,
+        stale=StaleDetector(store, _COMPANY, _STALE_AFTER),
+        escalator=StaleEscalator(store, _COMPANY),
     )
     return Harness(state=state, store=store, llm=fake, event=event)
 
@@ -90,6 +97,29 @@ async def test_the_same_event_is_only_handled_once(harness: Harness) -> None:
     await asyncio.gather(*harness.state.running)
 
     assert len(harness.llm.contexts) == 1
+
+
+async def test_a_failure_that_waited_too_long_is_escalated(harness: Harness) -> None:
+    """A failed result older than the threshold leaves a note for the human."""
+    harness.store.write(
+        _COMPANY,
+        "results/old-event",
+        "event_id: old-event\n"
+        "source_id: C123:1\n"
+        "resource_key: thread/slack/C123:1\n"
+        "action: slack_draft\n"
+        "success: false\n"
+        f"processed_at: {_OLD_STAMP}\n"
+        "detail: the remote refused\n",
+    )
+    orchestrator = Orchestrator("companies", log=logging.getLogger("briar2.test"))
+
+    await orchestrator.tick(harness.state)
+    await asyncio.gather(*harness.state.running)
+
+    note = harness.store.read(_COMPANY, "escalations/old-event")
+    assert note is not None
+    assert "still waiting for a human" in note
 
 
 def test_build_state_wires_the_config(tmp_path: Path) -> None:

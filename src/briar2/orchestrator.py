@@ -25,6 +25,7 @@ from briar2.models import ActionResult, Event
 from briar2.queue import EventQueue
 from briar2.sources.base import Source
 from briar2.sources.factory import SourceFactory
+from briar2.stale import StaleDetector, StaleEscalator
 
 _TICK_SECONDS = 5
 _DEDUP_WINDOW = 300  # seconds (D28)
@@ -42,6 +43,9 @@ class CompanyState:
     sources: list[Source]
     runner: AgentRunner
     cap: int
+    store: KnowledgeStore
+    stale: StaleDetector
+    escalator: StaleEscalator
     last_poll: dict[Source, datetime] = field(default_factory=dict)
     last_seen: dict[Source, datetime] = field(default_factory=dict)
     running: set[asyncio.Task[None]] = field(default_factory=set)
@@ -111,13 +115,25 @@ class Orchestrator:
             dedup=SlidingWindowDedup(window_seconds=_DEDUP_WINDOW),
             lock=ResourceLock.from_root(config.paths.lock_root),
             sources=SourceFactory().build(config.sources),
-            runner=AgentRunner(
-                AnthropicLLM(config.company, config.llm),
-                ActionRegistry(config.actions),
-                store,
-            ),
+            runner=self._runner(config, store),
             cap=config.cap,
+            store=store,
+            stale=self._stale(config, store),
+            escalator=StaleEscalator(store, config.company),
         )
+
+    def _runner(self, config: CompanyConfig, store: KnowledgeStore) -> AgentRunner:
+        """The agent runner that turns one event into one action."""
+        return AgentRunner(
+            AnthropicLLM(config.company, config.llm),
+            ActionRegistry(config.actions),
+            store,
+        )
+
+    def _stale(self, config: CompanyConfig, store: KnowledgeStore) -> StaleDetector:
+        """The detector that finds failures nobody picked up."""
+        threshold = timedelta(minutes=config.stale_after_minutes)
+        return StaleDetector(store, config.company, threshold)
 
     async def _loop(self, state: CompanyState) -> None:
         while True:
@@ -128,6 +144,7 @@ class Orchestrator:
         """One pass of the loop: poll the due sources, then spawn agents."""
         self._poll_due_sources(state)
         await self._drain_queue(state)
+        self._escalate_stale(state)
 
     def _poll_due_sources(self, state: CompanyState) -> None:
         now = datetime.now(timezone.utc)
@@ -208,3 +225,15 @@ class Orchestrator:
         self._logger().error(
             "event_id=%s dead_letter path=%s reason=%s", event.event_id, path, reason
         )
+
+    def _escalate_stale(self, state: CompanyState) -> None:
+        """Leave a note for every failure that waited too long (D21)."""
+        if not state.stale.due():
+            return
+        for item in state.escalator.escalate(state.stale.check()):
+            self._logger().warning(
+                "event_id=%s escalated source=%s processed_at=%s",
+                item.event_id,
+                item.source_id,
+                item.processed_at,
+            )

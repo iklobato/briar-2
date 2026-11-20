@@ -116,6 +116,9 @@ Tokens live in environment variables, never in the config file.
 | What | Where |
 |---|---|
 | Knowledge and drafts | `~/.cache/briar/knowledge/<company>/` |
+| Results of each run | `~/.cache/briar/knowledge/<company>/results/` |
+| Drafts to review | `~/.cache/briar/knowledge/<company>/drafts/` |
+| Escalations for a human | `~/.cache/briar/knowledge/<company>/escalations/` |
 | Queue | `~/.cache/briar/queue/<company>/` |
 | Failed events | `~/.cache/briar/queue/<company>/dead/` |
 | Locks | `~/.cache/briar/locks/` |
@@ -123,6 +126,13 @@ Tokens live in environment variables, never in the config file.
 
 Every log line carries the event id, so one event can be followed from the
 poll to the draft.
+
+## Stale events
+
+A run that failed and nobody looked at it still waiting after
+`stale_after_minutes` gets an escalation note under `escalations/`. The note
+is a file in the knowledge store, never a message (D17), and the same failure
+is only escalated once. The check runs every 15 minutes.
 
 ## Deploy (one process per company)
 
