@@ -1,0 +1,20 @@
+[Unit]
+Description=briar2 iktech orchestrator
+After=network.target
+
+[Service]
+Type=simple
+User=iklobato
+WorkingDirectory=/Users/iklo/briar-2
+Environment="ANTHROPIC_API_KEY="
+Environment="SLACK_BOT_TOKEN="
+Environment="GITLAB_TOKEN="
+Environment="GITHUB_TOKEN="
+ExecStart=/Users/iklo/.local/bin/briar2 serve iktech
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
