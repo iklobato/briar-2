@@ -32,3 +32,9 @@ profile = "black"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+pythonpath = ["src", "tests"]
+# pytest-randomly loads torch on this machine and torch is built for numpy 1.x
+addopts = "-p no:randomly"
+
+[tool.pyright]
+extraPaths = ["src", "tests"]

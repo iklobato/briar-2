@@ -32,7 +32,7 @@ _INITIAL_LOOKBACK = timedelta(minutes=30)
 
 
 @dataclass(frozen=True)
-class _LoopState:
+class CompanyState:
     """Everything one company's serve loop needs."""
 
     company: str
@@ -92,7 +92,7 @@ class Orchestrator:
         return configs
 
     async def _serve(self, config: CompanyConfig) -> None:
-        state = self._build_state(config)
+        state = self.build_state(config)
         self._logger().info(
             "company=%s starting cap=%d sources=%d",
             config.company,
@@ -101,11 +101,11 @@ class Orchestrator:
         )
         await self._loop(state)
 
-    def _build_state(self, config: CompanyConfig) -> _LoopState:
+    def build_state(self, config: CompanyConfig) -> CompanyState:
         queue_dir = Path(config.paths.queue_root).expanduser() / config.company
         queue_dir.mkdir(parents=True, exist_ok=True)
         store = KnowledgeStore.from_root(config.paths.knowledge_root)
-        return _LoopState(
+        return CompanyState(
             company=config.company,
             queue=EventQueue(queue_dir, ResourceLock(queue_dir)),
             dedup=SlidingWindowDedup(window_seconds=_DEDUP_WINDOW),
@@ -119,25 +119,29 @@ class Orchestrator:
             cap=config.cap,
         )
 
-    async def _loop(self, state: _LoopState) -> None:
+    async def _loop(self, state: CompanyState) -> None:
         while True:
-            self._poll_due_sources(state)
-            await self._drain_queue(state)
+            await self.tick(state)
             await asyncio.sleep(_TICK_SECONDS)
 
-    def _poll_due_sources(self, state: _LoopState) -> None:
+    async def tick(self, state: CompanyState) -> None:
+        """One pass of the loop: poll the due sources, then spawn agents."""
+        self._poll_due_sources(state)
+        await self._drain_queue(state)
+
+    def _poll_due_sources(self, state: CompanyState) -> None:
         now = datetime.now(timezone.utc)
         for source in state.sources:
             if self._is_due(source, state, now):
                 self._poll_source(source, state, now)
 
-    def _is_due(self, source: Source, state: _LoopState, now: datetime) -> bool:
+    def _is_due(self, source: Source, state: CompanyState, now: datetime) -> bool:
         last = state.last_poll.get(source)
         if last is None:
             return True
         return (now - last).total_seconds() >= source.poll_every_seconds
 
-    def _poll_source(self, source: Source, state: _LoopState, now: datetime) -> None:
+    def _poll_source(self, source: Source, state: CompanyState, now: datetime) -> None:
         since = state.last_seen.get(source, now - _INITIAL_LOOKBACK)
         events = source.poll(since)
         state.last_poll[source] = now
@@ -145,7 +149,7 @@ class Orchestrator:
         for event in events:
             self._try_enqueue(event, state)
 
-    def _try_enqueue(self, event: Event, state: _LoopState) -> None:
+    def _try_enqueue(self, event: Event, state: CompanyState) -> None:
         """Enqueue if not a duplicate (D28)."""
         if state.dedup.is_duplicate(event):
             return
@@ -159,7 +163,7 @@ class Orchestrator:
             event.priority.value,
         )
 
-    async def _drain_queue(self, state: _LoopState) -> None:
+    async def _drain_queue(self, state: CompanyState) -> None:
         """Spawn one agent per queued event, up to the company cap (D25)."""
         while len(state.running) < state.cap:
             event = state.queue.dequeue()
@@ -169,7 +173,7 @@ class Orchestrator:
             state.running.add(task)
             task.add_done_callback(state.running.discard)
 
-    async def _run_event(self, event: Event, state: _LoopState) -> None:
+    async def _run_event(self, event: Event, state: CompanyState) -> None:
         """Run one event through the agent, off the event loop."""
         self._logger().info("event_id=%s start", event.event_id)
         try:
@@ -183,7 +187,7 @@ class Orchestrator:
         self._route_outcome(event, outcome, state)
 
     def _route_outcome(
-        self, event: Event, outcome: ActionResult, state: _LoopState
+        self, event: Event, outcome: ActionResult, state: CompanyState
     ) -> None:
         """Log what the agent did, then retry skips and dead-letter failures."""
         self._logger().info(
@@ -199,7 +203,7 @@ class Orchestrator:
         if not outcome.success:
             self._dead_letter(event, outcome.detail, state)
 
-    def _dead_letter(self, event: Event, reason: str, state: _LoopState) -> None:
+    def _dead_letter(self, event: Event, reason: str, state: CompanyState) -> None:
         path = state.queue.dead_letter(event, reason)
         self._logger().error(
             "event_id=%s dead_letter path=%s reason=%s", event.event_id, path, reason
