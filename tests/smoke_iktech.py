@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from briar2.config import CompanyConfigLoader
+from briar2.config import CompanyConfig, CompanyConfigLoader
 from briar2.dedup import SlidingWindowDedup
 from briar2.knowledge import KnowledgeStore
 from briar2.lock import ResourceLock
