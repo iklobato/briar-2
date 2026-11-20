@@ -15,6 +15,7 @@ import json
 import logging
 import shutil
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,7 +26,9 @@ from briar2.knowledge import KnowledgeStore
 from briar2.lock import ResourceLock
 from briar2.models import Decision, Event, Priority, SourceType
 from briar2.queue import EventQueue
-from fakes import FakeSource
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fakes import FakeSource  # noqa: E402
 
 # ── constants ────────────────────────────────────────────────────────
 _DEDUP_WINDOW_SECONDS = 300
@@ -96,7 +99,7 @@ class _FakeAction:
                     "context_len": len(context),
                 }
             )
-            return _ActionResult(skipped=False, result="ok")
+            return _ActionResult(skipped=False, outcome="ok")
         finally:
             lock.release(resource)
 

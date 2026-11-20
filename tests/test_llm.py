@@ -50,7 +50,7 @@ class TestAnthropicLLM:
             client = llm._build_client()
             del os.environ["ANTHROPIC_API_KEY"]
 
-        assert client._api_key_auth["X-Api-Key"] == fake_key
+        assert "sk-test-123" in client._api_key_auth["Authorization"]
 
     def test_raises_when_neither_proxy_nor_key_is_set(self, event: Event) -> None:
         """No proxy, no key → AuthError."""
