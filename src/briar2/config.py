@@ -49,6 +49,9 @@ class GitLabSourceConfig(SourceConfig):
         default="GITLAB_TOKEN", description="Env var holding PRIVATE_TOKEN"
     )
     project: str = Field(description="namespace/project slug")
+    url: str = Field(
+        default="https://gitlab.com", description="GitLab instance URL, self-hosted ok"
+    )
 
 
 class GitHubSourceConfig(SourceConfig):
@@ -56,6 +59,10 @@ class GitHubSourceConfig(SourceConfig):
 
     token_env: str = Field(default="GITHUB_TOKEN", description="Env var holding PAT")
     repos: list[str] = Field(default_factory=list, description="owner/repo slugs")
+    url: str = Field(
+        default="https://api.github.com",
+        description="GitHub API base URL, Enterprise is https://host/api/v3",
+    )
 
 
 class JiraSourceConfig(SourceConfig):

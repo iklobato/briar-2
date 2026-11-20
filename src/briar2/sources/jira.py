@@ -12,24 +12,31 @@ from datetime import datetime, timezone
 import httpx
 
 from briar2.models import Event, Priority, SourceType
-from briar2.sources.base import Source
+from briar2.sources.base import PollerConfig, Source
 
 
 @dataclass(frozen=True)
-class _JiraConfig:
+class JiraConfig(PollerConfig):
+    """How to reach one Jira instance and one JQL query."""
+
     token_env: str
     jql: str
     url: str
-    poll_every: str
 
 
 class JiraSource(Source):
     source_type = SourceType.JIRA_ISSUE
+    _config: JiraConfig
 
     _REQUEST_TIMEOUT = 10.0
 
-    def __init__(self, config: _JiraConfig) -> None:
+    def __init__(self, config: JiraConfig) -> None:
         self._config = config
+
+    @property
+    def poll_every(self) -> str:
+        """The interval from the company config."""
+        return self._config.poll_every
 
     def poll(self, since: datetime) -> list[Event]:
         """Fetch updated issues matching JQL since `since`."""

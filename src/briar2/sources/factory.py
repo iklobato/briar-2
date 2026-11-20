@@ -41,40 +41,48 @@ class SourceFactory:
         return None
 
     def _slack(self, cfg: SlackSourceConfig) -> Source:
-        from briar2.sources.slack import SlackSource
+        from briar2.sources.slack import SlackConfig, SlackSource
 
         return SlackSource(
-            bot_token_env=cfg.bot_token_env,
-            channels=cfg.channels,
-            poll_every=cfg.poll_every,
+            SlackConfig(
+                poll_every=cfg.poll_every,
+                bot_token_env=cfg.bot_token_env,
+                channels=cfg.channels,
+            )
         )
 
     def _gitlab(self, cfg: GitLabSourceConfig) -> Source:
-        from briar2.sources.gitlab import GitLabSource
+        from briar2.sources.gitlab import GitLabConfig, GitLabSource
 
         return GitLabSource(
-            token_env=cfg.token_env,
-            project=cfg.project,
-            poll_every=cfg.poll_every,
+            GitLabConfig(
+                poll_every=cfg.poll_every,
+                token_env=cfg.token_env,
+                project=cfg.project,
+                url=cfg.url,
+            )
         )
 
     def _github(self, cfg: GitHubSourceConfig) -> Source:
-        from briar2.sources.github import GitHubSource
+        from briar2.sources.github import GitHubConfig, GitHubSource
 
         return GitHubSource(
-            token_env=cfg.token_env,
-            repos=cfg.repos,
-            poll_every=cfg.poll_every,
+            GitHubConfig(
+                poll_every=cfg.poll_every,
+                token_env=cfg.token_env,
+                repos=cfg.repos,
+                url=cfg.url,
+            )
         )
 
     def _jira(self, cfg: JiraSourceConfig) -> Source:
-        from briar2.sources.jira import JiraSource, _JiraConfig
+        from briar2.sources.jira import JiraConfig, JiraSource
 
         return JiraSource(
-            _JiraConfig(
+            JiraConfig(
+                poll_every=cfg.poll_every,
                 token_env=cfg.token_env,
                 jql=cfg.jql,
                 url=cfg.url,
-                poll_every=cfg.poll_every,
             )
         )
