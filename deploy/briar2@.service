@@ -1,0 +1,18 @@
+[Unit]
+Description=briar-2 serve loop for company %i
+Documentation=https://github.com/iklobato/briar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/briar-2
+EnvironmentFile=/etc/briar-2/%i.env
+ExecStart=/opt/briar-2/.venv/bin/briar2 serve %i --config-dir /etc/briar-2/companies
+Restart=always
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
