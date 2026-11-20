@@ -1,0 +1,41 @@
+# iktech — briar-2 company configuration
+# https://iktechsolutions.slack.com/archives/C0CKNHQ52E6
+
+company: iktech
+cap: 4
+
+sources:
+  slack:
+    bot_token_env: SLACK_BOT_TOKEN
+    channels:
+      - C0CKNHQ52E6
+    poll_every: 30s
+
+  gitlab:
+    token_env: GITLAB_TOKEN
+    project: iktech/ai-infra
+    url: https://gitlab.com
+    poll_every: 1m
+
+  github:
+    token_env: GITHUB_TOKEN
+    repos:
+      - iktechdev/briar
+    url: https://api.github.com
+    poll_every: 2m
+
+  jira:
+    token_env: JIRA_TOKEN
+    jql: project = IK AND status != Done
+    url: https://unlock-dev.atlassian.net
+    poll_every: 5m
+
+actions:
+  slack_draft: true
+  gitlab_approve: false
+  ci_fix_attempts: 3
+
+paths:
+  knowledge_root: "~/.cache/briar/knowledge/"
+  lock_root: "~/.cache/briar/locks/"
+  queue_root: "~/.cache/briar/queue/"
